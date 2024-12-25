@@ -51,12 +51,14 @@ sf::Color hex_to_color(const std::string& hex) {
 }
 
 // Function to send JSON messages over the socket
-void send_json(const json& message) {
+bool send_json(const json& message) {
     std::string msg_str = message.dump() + "\n";
     ssize_t n = send(sockfd, msg_str.c_str(), msg_str.length(), 0);
     if (n < 0) {
         perror("Send error");
+        return false;
     }
+    return true;
 }
 
 // Function to handle incoming messages from the server
@@ -180,9 +182,9 @@ int main() {
 
     // Load font
     sf::Font font;
-    if (!font.loadFromFile("Arial.ttf")) {
+    if (!font.loadFromFile("resources/fonts/Arial.ttf")) {
         std::cerr << "Failed to load Arial.ttf. Attempting to load OpenSans.ttf." << std::endl;
-        if (!font.loadFromFile("client/resources/fonts/OpenSans.ttf")) {
+        if (!font.loadFromFile("resources/fonts/OpenSans.ttf")) {
             std::cerr << "Failed to load OpenSans.ttf." << std::endl;
             // Handle the error appropriately, e.g., exit or use a default font.
         }
@@ -240,6 +242,7 @@ int main() {
 
     // Start a thread to receive messages
     std::thread recv_thread(receive_messages);
+    recv_thread.detach();
 
     // Prompt for username
     std::cout << "Enter your username: ";
