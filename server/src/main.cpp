@@ -30,13 +30,15 @@ struct User {
     int fd;                     // File descriptor for the socket
     std::string uname;          // Username
     std::string ucolor;         // Assigned color in hex format (e.g., "#FF5733")
+    int cursor_x;               // Cursor X position
+    int cursor_y;               // Cursor Y position
 
-    // Existing constructor
+    // Parameterized constructor
     User(int fd, const std::string& uname, const std::string& ucolor)
-        : fd(fd), uname(uname), ucolor(ucolor) {}
+        : fd(fd), uname(uname), ucolor(ucolor), cursor_x(0), cursor_y(0) {}
 
     // Default constructor
-    User() : fd(-1), uname(""), ucolor("#000000") {}
+    User() : fd(-1), uname(""), ucolor("#000000"), cursor_x(0), cursor_y(0) {}
 };
 
 // Global Variables
@@ -49,6 +51,9 @@ std::vector<std::string> colors = {            // Predefined list of colors
 };
 int color_index = 0;                           // Index to assign colors
 std::mutex color_mutex;                        // Mutex to protect color assignment
+
+std::vector<std::string> shared_buffer = {""}; // Shared document buffer
+std::mutex buffer_mutex;                        // Mutex to protect the shared buffer
 
 // Signal Handling for Graceful Shutdown
 std::atomic<bool> server_running(true);
@@ -68,15 +73,31 @@ std::string assign_color() {
     return color;
 }
 
+// Function to send all data reliably
+bool send_all(int sockfd, const std::string& message) {
+    size_t total_sent = 0;
+    size_t to_send = message.length();
+    const char* data = message.c_str();
+    while (total_sent < to_send) {
+        ssize_t sent = send(sockfd, data + total_sent, to_send - total_sent, 0);
+        if (sent < 0) {
+            perror("Send error");
+            return false;
+        }
+        total_sent += sent;
+    }
+    return true;
+}
+
 // Function to broadcast a message to all connected clients
 void broadcast_message(const json& message, int exclude_fd = -1) {
     std::lock_guard<std::mutex> lock(users_mutex);
     std::string msg_str = message.dump() + "\n";
     for (const auto& [fd, user] : users) {
         if (fd == exclude_fd) continue; // Skip sending to the sender
-        ssize_t n = send(fd, msg_str.c_str(), msg_str.length(), 0);
-        if (n < 0) {
-            perror("Send error");
+        bool success = send_all(fd, msg_str);
+        if (!success) {
+            std::cerr << "Failed to send message to user: " << user.uname << std::endl;
             // Optionally handle disconnection here
         }
     }
@@ -118,7 +139,7 @@ void handle_client(int client_fd) {
                     {"message", "Invalid username. Name field missing."}
                 }}
             };
-            send(client_fd, error_msg.dump().c_str(), error_msg.dump().length(), 0);
+            send_all(client_fd, error_msg.dump() + "\n");
             close(client_fd);
             return;
         }
@@ -133,7 +154,7 @@ void handle_client(int client_fd) {
                     {"message", "Username cannot be empty."}
                 }}
             };
-            send(client_fd, error_msg.dump().c_str(), error_msg.dump().length(), 0);
+            send_all(client_fd, error_msg.dump() + "\n");
             close(client_fd);
             return;
         }
@@ -150,7 +171,7 @@ void handle_client(int client_fd) {
                             {"message", "Username already taken. Choose another one."}
                         }}
                     };
-                    send(client_fd, error_msg.dump().c_str(), error_msg.dump().length(), 0);
+                    send_all(client_fd, error_msg.dump() + "\n");
                     close(client_fd);
                     return;
                 }
@@ -174,11 +195,11 @@ void handle_client(int client_fd) {
             {"data", {
                 {"message_type", "connect_success"},
                 {"color", ucolor},
-                {"buffer", std::vector<std::string>()},  // Initialize with empty buffer or existing document
-                {"collaborators", json::array()}        // Initialize with empty collaborators list
+                {"buffer", shared_buffer},        // Send current shared buffer
+                {"collaborators", json::array()}  // Send current collaborators
             }}
         };
-        send(client_fd, success_msg.dump().c_str(), success_msg.dump().length(), 0);
+        send_all(client_fd, success_msg.dump() + "\n");
 
         // Broadcast to other users that a new user has connected
         json user_event = {
@@ -215,34 +236,61 @@ void handle_client(int client_fd) {
                 try {
                     json message_json = json::parse(message_line);
                     // Handle different packet types
-                    if (message_json["packet_type"] == "update") {
-                        // Handle buffer updates or cursor movements
+                    if (message_json["packet_type"] == "operation") {
+                        // Handle operation-based updates
                         json data = message_json["data"];
-                        if (data.contains("buffer")) {
-                            // Handle buffer update
-                            std::vector<std::string> new_buffer = data["buffer"].get<std::vector<std::string>>();
-                            // Update the shared document buffer here if implemented
-                            // For now, we can broadcast the update to other clients
-                            broadcast_message(message_json, client_fd);
-                        }
-                        if (data.contains("cursor")) {
-                            // Handle cursor update
-                            int cursor_x = data["cursor"]["x"];
-                            int cursor_y = data["cursor"]["y"];
-                            std::string sender_uname;
-                            {
-                                std::lock_guard<std::mutex> lock(users_mutex);
-                                sender_uname = users[client_fd].uname;
+                        std::string op_type = data["type"];
+                        int x = data["position"]["x"];
+                        int y = data["position"]["y"];
+                        std::string character = data["character"];
+
+                        bool valid_operation = false;
+
+                        {
+                            std::lock_guard<std::mutex> lock(buffer_mutex);
+                            if (op_type == "insert") {
+                                if (y < shared_buffer.size() && x <= shared_buffer[y].size()) {
+                                    shared_buffer[y].insert(shared_buffer[y].begin() + x, character[0]);
+                                    valid_operation = true;
+                                }
                             }
-                            json cursor_update = {
-                                {"packet_type", "cursor_update"},
-                                {"data", {
-                                    {"user", sender_uname},
-                                    {"cursor", { {"x", cursor_x}, {"y", cursor_y} }}
-                                }}
-                            };
-                            broadcast_message(cursor_update, client_fd);
+                            else if (op_type == "delete") {
+                                if (y < shared_buffer.size() && x < shared_buffer[y].size()) {
+                                    shared_buffer[y].erase(shared_buffer[y].begin() + x);
+                                    valid_operation = true;
+                                }
+                            }
+                            else if (op_type == "insert_newline") {
+                                if (y < shared_buffer.size() && x <= shared_buffer[y].size()) {
+                                    std::string new_line = shared_buffer[y].substr(x);
+                                    shared_buffer[y] = shared_buffer[y].substr(0, x);
+                                    shared_buffer.insert(shared_buffer.begin() + y + 1, new_line);
+                                    valid_operation = true;
+                                }
+                            }
+                            else if (op_type == "delete_newline") {
+                                if (y < shared_buffer.size() && y > 0) {
+                                    int prev_y = y - 1;
+                                    users[client_fd].cursor_x = shared_buffer[prev_y].size();
+                                    shared_buffer[prev_y] += shared_buffer[y];
+                                    shared_buffer.erase(shared_buffer.begin() + y);
+                                    valid_operation = true;
+                                }
+                            }
                         }
+
+                        if (valid_operation) {
+                            // Broadcast the operation to other clients
+                            broadcast_message(message_json, client_fd);
+                            std::cout << "Broadcasted operation '" << op_type << "' from user '" << users[client_fd].uname << "'." << std::endl;
+                        }
+                        else {
+                            std::cerr << "Invalid operation received from user '" << users[client_fd].uname << "'." << std::endl;
+                        }
+                    }
+                    else if (message_json["packet_type"] == "update") {
+                        // Handle legacy buffer-based updates if any
+                        // Optional: Implement if you still want to support buffer-based updates
                     }
                     // Handle other packet types as needed
                 }
@@ -330,6 +378,9 @@ int main() {
 
     std::cout << "Server started on port " << PORT << "." << std::endl;
 
+    // Start a thread to receive messages (optional, depending on design)
+    // For this implementation, we'll handle clients in separate threads.
+
     // Main loop to accept incoming connections
     while (server_running) { // Use the atomic flag for loop control
         struct sockaddr_in client_addr;
@@ -375,6 +426,7 @@ int main() {
     {
         std::lock_guard<std::mutex> lock(users_mutex);
         for (const auto& [fd, user] : users) {
+            send_all(fd, shutdown_msg.dump() + "\n");
             close(fd);
         }
         users.clear();

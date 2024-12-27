@@ -1,11 +1,12 @@
 // client/src/main.cpp
 
 #include <SFML/Graphics.hpp>
-#include <nlohmann/json.hpp>
 #include <arpa/inet.h>
 #include <unistd.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
+
+#include <nlohmann/json.hpp>
 
 #include <iostream>
 #include <string>
@@ -16,7 +17,6 @@
 #include <atomic>
 #include <algorithm>
 #include <cstring>
-#include <libgen.h> // For dirname
 
 using json = nlohmann::json;
 
@@ -50,12 +50,27 @@ sf::Color hex_to_color(const std::string& hex) {
     return sf::Color(r, g, b);
 }
 
+// Function to send all data reliably
+bool send_all(int sockfd, const std::string& message) {
+    size_t total_sent = 0;
+    size_t to_send = message.length();
+    const char* data = message.c_str();
+    while (total_sent < to_send) {
+        ssize_t sent = send(sockfd, data + total_sent, to_send - total_sent, 0);
+        if (sent < 0) {
+            perror("Send error");
+            return false;
+        }
+        total_sent += sent;
+    }
+    return true;
+}
+
 // Function to send JSON messages over the socket
 bool send_json(const json& message) {
     std::string msg_str = message.dump() + "\n";
-    ssize_t n = send(sockfd, msg_str.c_str(), msg_str.length(), 0);
-    if (n < 0) {
-        perror("Send error");
+    if (!send_all(sockfd, msg_str)) {
+        std::cerr << "Failed to send message to server." << std::endl;
         return false;
     }
     return true;
@@ -64,15 +79,16 @@ bool send_json(const json& message) {
 // Function to handle incoming messages from the server
 void receive_messages() {
     char buffer[4096];
+    std::string recv_buffer = "";
     while (running) {
-        ssize_t n = recv(sockfd, buffer, sizeof(buffer)-1, 0);
+        ssize_t n = recv(sockfd, buffer, sizeof(buffer) - 1, 0);
         if (n > 0) {
             buffer[n] = '\0';
-            std::string msg_str(buffer, n);
+            recv_buffer += buffer;
             size_t pos = 0;
-            while ((pos = msg_str.find('\n')) != std::string::npos) {
-                std::string line = msg_str.substr(0, pos);
-                msg_str.erase(0, pos + 1);
+            while ((pos = recv_buffer.find('\n')) != std::string::npos) {
+                std::string line = recv_buffer.substr(0, pos);
+                recv_buffer.erase(0, pos + 1);
                 if (line.empty()) continue;
                 try {
                     json message = json::parse(line);
@@ -99,7 +115,7 @@ void receive_messages() {
                             if (message["data"].contains("color")) {
                                 user_color = hex_to_color(message["data"]["color"].get<std::string>());
                             }
-                            std::cout << "Connected to server successfully.\n";
+                            std::cout << "Connected to server successfully." << std::endl;
                         }
                         else if (msg_type == "error_newname_invalid" || msg_type == "error_newname_taken") {
                             std::cout << "Error: " << message["data"]["message"] << std::endl;
@@ -121,37 +137,50 @@ void receive_messages() {
                             c.cursor_y = user["cursor"]["y"];
                             std::lock_guard<std::mutex> lock(collaborators_mutex);
                             collaborators[c.name] = c;
-                            std::cout << "User '" << c.name << "' connected.\n";
+                            std::cout << "User '" << c.name << "' connected." << std::endl;
                         }
                         else if (event == "user_disconnected") {
                             std::string name = message["data"]["user"]["name"];
                             std::lock_guard<std::mutex> lock(collaborators_mutex);
                             collaborators.erase(name);
-                            std::cout << "User '" << name << "' disconnected.\n";
+                            std::cout << "User '" << name << "' disconnected." << std::endl;
                         }
                     }
-                    else if (message["packet_type"] == "buffer_update") {
+                    else if (message["packet_type"] == "operation") {
+                        // Handle incoming operation
+                        json data = message["data"];
+                        std::string op_type = data["type"];
+                        int x = data["position"]["x"];
+                        int y = data["position"]["y"];
+                        std::string character = data["character"];
+
                         std::lock_guard<std::mutex> lock(buffer_mutex);
-                        shared_buffer = message["data"]["buffer"].get<std::vector<std::string>>();
-                    }
-                    else if (message["packet_type"] == "cursor_update") {
-                        std::string name = message["data"]["user"];
-                        int x = message["data"]["cursor"]["x"];
-                        int y = message["data"]["cursor"]["y"];
-                        std::lock_guard<std::mutex> lock(collaborators_mutex);
-                        if (collaborators.find(name) != collaborators.end()) {
-                            collaborators[name].cursor_x = x;
-                            collaborators[name].cursor_y = y;
+                        if (op_type == "insert") {
+                            if (y < shared_buffer.size() && x <= shared_buffer[y].size()) {
+                                shared_buffer[y].insert(shared_buffer[y].begin() + x, character[0]);
+                            }
                         }
-                        else {
-                            // New collaborator (if not already in the list)
-                            Collaborator c;
-                            c.name = name;
-                            c.color = sf::Color::Red; // Default color, could assign dynamically
-                            c.cursor_x = x;
-                            c.cursor_y = y;
-                            collaborators[name] = c;
+                        else if (op_type == "delete") {
+                            if (y < shared_buffer.size() && x < shared_buffer[y].size()) {
+                                shared_buffer[y].erase(shared_buffer[y].begin() + x);
+                            }
                         }
+                        else if (op_type == "insert_newline") {
+                            if (y < shared_buffer.size() && x <= shared_buffer[y].size()) {
+                                std::string new_line = shared_buffer[y].substr(x);
+                                shared_buffer[y] = shared_buffer[y].substr(0, x);
+                                shared_buffer.insert(shared_buffer.begin() + y + 1, new_line);
+                            }
+                        }
+                        else if (op_type == "delete_newline") {
+                            if (y < shared_buffer.size() && y > 0) {
+                                int prev_y = y - 1;
+                                shared_buffer[prev_y] += shared_buffer[y];
+                                shared_buffer.erase(shared_buffer.begin() + y);
+                            }
+                        }
+
+                        std::cout << "Applied operation '" << op_type << "' from server." << std::endl;
                     }
                 }
                 catch (json::parse_error& e) {
@@ -160,7 +189,7 @@ void receive_messages() {
             }
         }
         else if (n == 0) {
-            std::cout << "Server closed the connection.\n";
+            std::cout << "Server closed the connection." << std::endl;
             running = false;
             return;
         }
@@ -174,20 +203,50 @@ void receive_messages() {
     }
 }
 
+// Function to apply an operation to the local buffer
+void apply_operation(const json& operation) {
+    std::string op_type = operation["type"];
+    int x = operation["position"]["x"];
+    int y = operation["position"]["y"];
+    std::string character = operation["character"];
+
+    std::lock_guard<std::mutex> lock(buffer_mutex);
+    if (op_type == "insert") {
+        if (y < shared_buffer.size() && x <= shared_buffer[y].size()) {
+            shared_buffer[y].insert(shared_buffer[y].begin() + x, character[0]);
+        }
+    }
+    else if (op_type == "delete") {
+        if (y < shared_buffer.size() && x < shared_buffer[y].size()) {
+            shared_buffer[y].erase(shared_buffer[y].begin() + x);
+        }
+    }
+    else if (op_type == "insert_newline") {
+        if (y < shared_buffer.size() && x <= shared_buffer[y].size()) {
+            std::string new_line = shared_buffer[y].substr(x);
+            shared_buffer[y] = shared_buffer[y].substr(0, x);
+            shared_buffer.insert(shared_buffer.begin() + y + 1, new_line);
+        }
+    }
+    else if (op_type == "delete_newline") {
+        if (y < shared_buffer.size() && y > 0) {
+            int prev_y = y - 1;
+            shared_buffer[prev_y] += shared_buffer[y];
+            shared_buffer.erase(shared_buffer.begin() + y);
+        }
+    }
+}
+
 int main() {
     // Initialize SFML window
     sf::RenderWindow window(sf::VideoMode(800, 600), "CoVim Client");
-    window.setVerticalSyncEnabled(false);
     window.setFramerateLimit(60);
 
     // Load font
     sf::Font font;
     if (!font.loadFromFile("resources/fonts/Arial.ttf")) {
-        std::cerr << "Failed to load Arial.ttf. Attempting to load OpenSans.ttf." << std::endl;
-        if (!font.loadFromFile("resources/fonts/OpenSans.ttf")) {
-            std::cerr << "Failed to load OpenSans.ttf." << std::endl;
-            // Handle the error appropriately, e.g., exit or use a default font.
-        }
+        std::cerr << "Failed to load Arial.ttf. Ensure the font file exists in 'resources/fonts/'." << std::endl;
+        return -1;
     }
 
     // Setup text display
@@ -216,7 +275,7 @@ int main() {
     if (!input_port.empty()) server_port = static_cast<unsigned short>(std::stoi(input_port));
 
     // Create socket
-    if ( (sockfd = socket(AF_INET, SOCK_STREAM, 0)) < 0 ) {
+    if ((sockfd = socket(AF_INET, SOCK_STREAM, 0)) < 0) {
         perror("Socket creation failed");
         return -1;
     }
@@ -224,17 +283,18 @@ int main() {
     // Server address
     struct sockaddr_in servaddr;
     memset(&servaddr, 0, sizeof(servaddr));
+
     servaddr.sin_family = AF_INET;
     servaddr.sin_port = htons(server_port);
 
-    if (inet_pton(AF_INET, server_ip.c_str(), &servaddr.sin_addr) <= 0 ) {
+    if (inet_pton(AF_INET, server_ip.c_str(), &servaddr.sin_addr) <= 0) {
         perror("Invalid address/ Address not supported");
         close(sockfd);
         return -1;
     }
 
     // Connect to server
-    if ( connect(sockfd, (struct sockaddr*)&servaddr, sizeof(servaddr)) < 0 ) {
+    if (connect(sockfd, (struct sockaddr*)&servaddr, sizeof(servaddr)) < 0) {
         perror("Connection Failed");
         close(sockfd);
         return -1;
@@ -251,7 +311,10 @@ int main() {
 
     // Send username as JSON
     json username_msg = { {"name", user_name} };
-    send_json(username_msg);
+    if (!send_json(username_msg)) {
+        std::cerr << "Failed to send username to server." << std::endl;
+        running = false;
+    }
 
     // Main loop variables
     int cursor_x = 0;
@@ -272,61 +335,78 @@ int main() {
                     std::lock_guard<std::mutex> lock(buffer_mutex);
                     if (!shared_buffer.empty()) {
                         if (cursor_x > 0) {
-                            shared_buffer[cursor_y].erase(shared_buffer[cursor_y].begin() + cursor_x - 1);
                             cursor_x--;
+                            char deleted_char = shared_buffer[cursor_y].at(cursor_x);
+                            shared_buffer[cursor_y].erase(cursor_x, 1);
+
+                            // Send delete operation
+                            json delete_op = {
+                                {"packet_type", "operation"},
+                                {"data", {
+                                    {"type", "delete"},
+                                    {"position", { {"x", cursor_x}, {"y", cursor_y} }},
+                                    {"character", std::string(1, deleted_char)}
+                                }}
+                            };
+                            send_json(delete_op);
                         }
                         else if (cursor_y > 0) {
+                            // Send delete_newline operation
+                            json delete_newline_op = {
+                                {"packet_type", "operation"},
+                                {"data", {
+                                    {"type", "delete_newline"},
+                                    {"position", { {"x", 0}, {"y", cursor_y} }},
+                                    {"character", ""}
+                                }}
+                            };
+                            send_json(delete_newline_op);
+
+                            // Merge lines locally
                             cursor_x = shared_buffer[cursor_y - 1].size();
                             shared_buffer[cursor_y - 1] += shared_buffer[cursor_y];
                             shared_buffer.erase(shared_buffer.begin() + cursor_y);
                             cursor_y--;
                         }
                     }
-
-                    // Send update to server
-                    json update_msg = {
-                        {"packet_type", "update"},
+                }
+                else if (event.text.unicode == '\r' || event.text.unicode == '\n') { // Enter key
+                    std::lock_guard<std::mutex> lock(buffer_mutex);
+                    // Send insert_newline operation
+                    json insert_newline_op = {
+                        {"packet_type", "operation"},
                         {"data", {
-                            {"buffer", shared_buffer},
-                            {"cursor", { {"x", cursor_x}, {"y", cursor_y} }}
+                            {"type", "insert_newline"},
+                            {"position", { {"x", cursor_x}, {"y", cursor_y} }},
+                            {"character", "\n"}
                         }}
                     };
-                    send_json(update_msg);
-                }
-                else if (event.text.unicode == '\r') { // Enter key
-                    std::lock_guard<std::mutex> lock(buffer_mutex);
+                    send_json(insert_newline_op);
+
+                    // Insert newline locally
                     std::string new_line = shared_buffer[cursor_y].substr(cursor_x);
                     shared_buffer[cursor_y] = shared_buffer[cursor_y].substr(0, cursor_x);
                     shared_buffer.insert(shared_buffer.begin() + cursor_y + 1, new_line);
                     cursor_y++;
                     cursor_x = 0;
-
-                    // Send update to server
-                    json update_msg = {
-                        {"packet_type", "update"},
-                        {"data", {
-                            {"buffer", shared_buffer},
-                            {"cursor", { {"x", cursor_x}, {"y", cursor_y} }}
-                        }}
-                    };
-                    send_json(update_msg);
                 }
                 else if (event.text.unicode >= 32 && event.text.unicode <= 126) { // Printable characters
                     std::lock_guard<std::mutex> lock(buffer_mutex);
                     if (cursor_y < shared_buffer.size()) {
-                        shared_buffer[cursor_y].insert(shared_buffer[cursor_y].begin() + cursor_x, static_cast<char>(event.text.unicode));
+                        char inserted_char = static_cast<char>(event.text.unicode);
+                        shared_buffer[cursor_y].insert(shared_buffer[cursor_y].begin() + cursor_x, inserted_char);
+                        // Send insert operation
+                        json insert_op = {
+                            {"packet_type", "operation"},
+                            {"data", {
+                                {"type", "insert"},
+                                {"position", { {"x", cursor_x}, {"y", cursor_y} }},
+                                {"character", std::string(1, inserted_char)}
+                            }}
+                        };
+                        send_json(insert_op);
                         cursor_x++;
                     }
-
-                    // Send update to server
-                    json update_msg = {
-                        {"packet_type", "update"},
-                        {"data", {
-                            {"buffer", shared_buffer},
-                            {"cursor", { {"x", cursor_x}, {"y", cursor_y} }}
-                        }}
-                    };
-                    send_json(update_msg);
                 }
             }
 
