@@ -239,22 +239,23 @@ void apply_operation(const json& operation) {
 
 int main() {
     // Initialize SFML window
-    sf::RenderWindow window(sf::VideoMode(800, 600), "CoVim Client");
+    sf::VideoMode vm({800, 600}, 32);
+    sf::RenderWindow window(vm, "CoVim Client");
     window.setFramerateLimit(60);
 
     // Load font
     sf::Font font;
-    if (!font.loadFromFile("resources/fonts/Arial.ttf")) {
+    if (!font.openFromFile("resources/fonts/Arial.ttf")) {
         std::cerr << "Failed to load Arial.ttf. Ensure the font file exists in 'resources/fonts/'." << std::endl;
         return -1;
     }
 
     // Setup text display
-    sf::Text text_display;
+    sf::Text text_display(font);
     text_display.setFont(font);
     text_display.setCharacterSize(16);
     text_display.setFillColor(sf::Color::Black);
-    text_display.setPosition(10, 10);
+    text_display.setPosition(sf::Vector2f(10.f, 10.f));
 
     // Setup own cursor rectangle
     sf::RectangleShape cursor_rect(sf::Vector2f(2, 20));
@@ -321,17 +322,18 @@ int main() {
     int cursor_y = 0;
 
     while (window.isOpen() && running) {
-        sf::Event event;
-        while (window.pollEvent(event)) {
-            if (event.type == sf::Event::Closed) {
+        
+        while (const std::optional event = window.pollEvent()) {
+            if (event->is<sf::Event::Closed>()) {
                 window.close();
                 running = false;
                 break;
             }
 
             // Handle text input
-            if (event.type == sf::Event::TextEntered) {
-                if (event.text.unicode == '\b') { // Backspace
+            if (const auto* textEntered = event->getIf<sf::Event::TextEntered>()) {
+                char32_t unicode = textEntered->unicode;
+                if (unicode == '\b') { // Backspace
                     std::lock_guard<std::mutex> lock(buffer_mutex);
                     if (!shared_buffer.empty()) {
                         if (cursor_x > 0) {
@@ -370,7 +372,7 @@ int main() {
                         }
                     }
                 }
-                else if (event.text.unicode == '\r' || event.text.unicode == '\n') { // Enter key
+                else if (unicode == '\r' || unicode == '\n') { // Enter key
                     std::lock_guard<std::mutex> lock(buffer_mutex);
                     // Send insert_newline operation
                     json insert_newline_op = {
@@ -390,10 +392,10 @@ int main() {
                     cursor_y++;
                     cursor_x = 0;
                 }
-                else if (event.text.unicode >= 32 && event.text.unicode <= 126) { // Printable characters
+                else if (unicode >= 32 && unicode <= 126) { // Printable characters
                     std::lock_guard<std::mutex> lock(buffer_mutex);
                     if (cursor_y < shared_buffer.size()) {
-                        char inserted_char = static_cast<char>(event.text.unicode);
+                        char inserted_char = static_cast<char>(unicode);
                         shared_buffer[cursor_y].insert(shared_buffer[cursor_y].begin() + cursor_x, inserted_char);
                         // Send insert operation
                         json insert_op = {
@@ -411,10 +413,12 @@ int main() {
             }
 
             // Handle key presses for navigation
-            if (event.type == sf::Event::KeyPressed) {
+            if (const auto* keyEvent = event->getIf<sf::Event::KeyPressed>()) {
                 bool moved = false;
                 std::lock_guard<std::mutex> lock(buffer_mutex);
-                if (event.key.code == sf::Keyboard::Left) {
+                sf::Keyboard::Key key = keyEvent->code;
+
+                if (key == sf::Keyboard::Key::Left) {
                     if (cursor_x > 0) {
                         cursor_x--;
                         moved = true;
@@ -425,7 +429,7 @@ int main() {
                         moved = true;
                     }
                 }
-                if (event.key.code == sf::Keyboard::Right) {
+                if (key == sf::Keyboard::Key::Right) {
                     if (cursor_y < shared_buffer.size()) {
                         if (cursor_x < shared_buffer[cursor_y].size()) {
                             cursor_x++;
@@ -438,14 +442,14 @@ int main() {
                         }
                     }
                 }
-                if (event.key.code == sf::Keyboard::Up) {
+                if (key == sf::Keyboard::Key::Up) {
                     if (cursor_y > 0) {
                         cursor_y--;
                         cursor_x = std::min(cursor_x, static_cast<int>(shared_buffer[cursor_y].size()));
                         moved = true;
                     }
                 }
-                if (event.key.code == sf::Keyboard::Down) {
+                if (key == sf::Keyboard::Key::Down) {
                     if (cursor_y < shared_buffer.size() - 1) {
                         cursor_y++;
                         cursor_x = std::min(cursor_x, static_cast<int>(shared_buffer[cursor_y].size()));
@@ -480,14 +484,14 @@ int main() {
         {
             std::lock_guard<std::mutex> lock(buffer_mutex);
             std::string current_line = (cursor_y < shared_buffer.size()) ? shared_buffer[cursor_y].substr(0, cursor_x) : "";
-            sf::Text temp_text;
+            sf::Text temp_text(font);
             temp_text.setFont(font);
             temp_text.setString(current_line);
             temp_text.setCharacterSize(16);
-            float text_width = temp_text.getLocalBounds().width;
-            float x_pos = 10 + text_width;
-            float y_pos = 10 + cursor_y * 20;
-            cursor_rect.setPosition(x_pos, y_pos);
+
+            float x_pos = 10.f + cursor_x * 9.f;
+            float y_pos = 10.f + cursor_y * 19.f;
+            cursor_rect.setPosition(sf::Vector2f(x_pos, y_pos));
         }
 
         // Clear window and draw elements
@@ -504,27 +508,27 @@ int main() {
 
                 // Calculate cursor position
                 std::string line = (collab.cursor_y < shared_buffer.size()) ? shared_buffer[collab.cursor_y].substr(0, collab.cursor_x) : "";
-                sf::Text temp_text;
+                sf::Text temp_text(font);
                 temp_text.setFont(font);
                 temp_text.setString(line);
                 temp_text.setCharacterSize(16);
-                float text_width = temp_text.getLocalBounds().width;
-                float x_pos = 10 + text_width;
-                float y_pos = 10 + collab.cursor_y * 20;
+                
+                float x_pos = 10.f + collab.cursor_x * 9.f;
+                float y_pos = 10.f + collab.cursor_y * 19.f;
 
                 // Draw cursor rectangle
                 sf::RectangleShape collab_cursor(sf::Vector2f(2, 20));
                 collab_cursor.setFillColor(collab.color);
-                collab_cursor.setPosition(x_pos, y_pos);
+                collab_cursor.setPosition(sf::Vector2f(x_pos, y_pos));
                 window.draw(collab_cursor);
 
                 // Draw collaborator's name
-                sf::Text name_text;
+                sf::Text name_text(font);
                 name_text.setFont(font);
                 name_text.setString(collab.name);
                 name_text.setCharacterSize(12);
                 name_text.setFillColor(collab.color);
-                name_text.setPosition(x_pos + 5, y_pos - 15);
+                name_text.setPosition(sf::Vector2f(x_pos + 5.f, y_pos - 15.f));
                 window.draw(name_text);
             }
         }
