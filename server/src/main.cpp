@@ -41,6 +41,31 @@ struct User {
     User() : fd(-1), uname(""), ucolor("#000000"), cursor_x(0), cursor_y(0) {}
 };
 
+// Define the enumeration for operation types
+enum class OperationType {
+    Insert,
+    Delete,
+    InsertNewline,
+    DeleteNewline,
+    Unknown
+};
+
+// Function to map string to OperationType enum
+OperationType getOperationType(const std::string& op_type_str) {
+    static const std::unordered_map<std::string, OperationType> op_map = {
+        {"insert", OperationType::Insert},
+        {"delete", OperationType::Delete},
+        {"insert_newline", OperationType::InsertNewline},
+        {"delete_newline", OperationType::DeleteNewline}
+    };
+    
+    auto it = op_map.find(op_type_str);
+    if (it != op_map.end()) {
+        return it->second;
+    }
+    return OperationType::Unknown;
+}
+
 // Global Variables
 std::map<int, User> users;                     // Map of file descriptors to Users
 std::mutex users_mutex;                        // Mutex to protect the users map
@@ -58,10 +83,12 @@ std::mutex buffer_mutex;                        // Mutex to protect the shared b
 // Signal Handling for Graceful Shutdown
 std::atomic<bool> server_running(true);
 
+int listen_fd = -1;
 void handle_signal(int signal) {
     if (signal == SIGINT) {
         std::cout << "\nShutting down server gracefully..." << std::endl;
         server_running = false;
+        close(listen_fd);
     }
 }
 
@@ -247,35 +274,44 @@ void handle_client(int client_fd) {
                         bool valid_operation = false;
 
                         {
+                            OperationType op = getOperationType(op_type);
                             std::lock_guard<std::mutex> lock(buffer_mutex);
-                            if (op_type == "insert") {
-                                if (y < shared_buffer.size() && x <= shared_buffer[y].size()) {
-                                    shared_buffer[y].insert(shared_buffer[y].begin() + x, character[0]);
-                                    valid_operation = true;
-                                }
-                            }
-                            else if (op_type == "delete") {
-                                if (y < shared_buffer.size() && x < shared_buffer[y].size()) {
-                                    shared_buffer[y].erase(shared_buffer[y].begin() + x);
-                                    valid_operation = true;
-                                }
-                            }
-                            else if (op_type == "insert_newline") {
-                                if (y < shared_buffer.size() && x <= shared_buffer[y].size()) {
-                                    std::string new_line = shared_buffer[y].substr(x);
-                                    shared_buffer[y] = shared_buffer[y].substr(0, x);
-                                    shared_buffer.insert(shared_buffer.begin() + y + 1, new_line);
-                                    valid_operation = true;
-                                }
-                            }
-                            else if (op_type == "delete_newline") {
-                                if (y < shared_buffer.size() && y > 0) {
-                                    int prev_y = y - 1;
-                                    users[client_fd].cursor_x = shared_buffer[prev_y].size();
-                                    shared_buffer[prev_y] += shared_buffer[y];
-                                    shared_buffer.erase(shared_buffer.begin() + y);
-                                    valid_operation = true;
-                                }
+                            switch (op){
+                                case OperationType::Insert:
+                                    if (y < shared_buffer.size() && x <= shared_buffer[y].size()) {
+                                        shared_buffer[y].insert(shared_buffer[y].begin() + x, character[0]);
+                                        valid_operation = true;
+                                    }
+                                    break;
+
+                                case OperationType::Delete:
+                                    if (y < shared_buffer.size() && x < shared_buffer[y].size()) {
+                                        shared_buffer[y].erase(shared_buffer[y].begin() + x);
+                                        valid_operation = true;
+                                    }
+                                    break;
+
+                                case OperationType::InsertNewline:
+                                    if (y < shared_buffer.size() && x <= shared_buffer[y].size()) {
+                                        std::string new_line = shared_buffer[y].substr(x);
+                                        shared_buffer[y] = shared_buffer[y].substr(0, x);
+                                        shared_buffer.insert(shared_buffer.begin() + y + 1, new_line);
+                                        valid_operation = true;
+                                    }
+                                    break;
+                                
+                                case OperationType::DeleteNewline:
+                                    if (y < shared_buffer.size() && y > 0) {
+                                        int prev_y = y - 1;
+                                        users[client_fd].cursor_x = shared_buffer[prev_y].size();
+                                        shared_buffer[prev_y] += shared_buffer[y];
+                                        shared_buffer.erase(shared_buffer.begin() + y);
+                                        valid_operation = true;
+                                    }
+                                    break;
+
+                                default:
+                                    break;
                             }
                         }
 
@@ -340,7 +376,7 @@ int main() {
     signal(SIGINT, handle_signal);
 
     // Create a TCP socket
-    int listen_fd = socket(AF_INET, SOCK_STREAM, 0);
+    listen_fd = socket(AF_INET, SOCK_STREAM, 0);
     if (listen_fd < 0) {
         perror("Socket creation failed");
         exit(EXIT_FAILURE);

@@ -238,15 +238,10 @@ void apply_operation(const json& operation) {
 }
 
 int main() {
-    // Initialize SFML window
-    sf::VideoMode vm({800, 600}, 32);
-    sf::RenderWindow window(vm, "CoVim Client");
-    window.setFramerateLimit(60);
-
     // Load font
     sf::Font font;
-    if (!font.openFromFile("resources/fonts/Arial.ttf")) {
-        std::cerr << "Failed to load Arial.ttf. Ensure the font file exists in 'resources/fonts/'." << std::endl;
+    if (!font.openFromFile("resources/fonts/Cascadia.ttf")) {
+        std::cerr << "Failed to load Cascadia.ttf. Ensure the font file exists in 'resources/fonts/'." << std::endl;
         return -1;
     }
 
@@ -316,6 +311,11 @@ int main() {
         std::cerr << "Failed to send username to server." << std::endl;
         running = false;
     }
+
+    // Initialize SFML window
+    sf::VideoMode vm({800, 600}, 32);
+    sf::RenderWindow window(vm, user_name);
+    window.setFramerateLimit(60);
 
     // Main loop variables
     int cursor_x = 0;
