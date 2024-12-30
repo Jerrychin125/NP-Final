@@ -94,7 +94,7 @@ void receive_messages() {
                     json message = json::parse(line);
                     if (message["packet_type"] == "message") {
                         std::string msg_type = message["data"]["message_type"];
-                        if (msg_type == "connect_success") {
+                        if (msg_type == "connect_") {
                             // Receive initial buffer and collaborators
                             {
                                 std::lock_guard<std::mutex> lock(buffer_mutex);
@@ -306,7 +306,12 @@ int main() {
     std::cin.ignore(); // Ignore remaining newline
 
     // Send username as JSON
-    json username_msg = { {"name", user_name} };
+    json username_msg = {
+        {"packet_type", "message"},
+        {"data", {
+            {"name", user_name}
+        }}
+    };
     if (!send_json(username_msg)) {
         std::cerr << "Failed to send username to server." << std::endl;
         running = false;
@@ -322,7 +327,6 @@ int main() {
     int cursor_y = 0;
 
     while (window.isOpen() && running) {
-        
         while (const std::optional event = window.pollEvent()) {
             if (event->is<sf::Event::Closed>()) {
                 window.close();

@@ -1,0 +1,15 @@
+[Mon Dec 30 11:52:18 2024] Server initialized on port 8555.
+[Mon Dec 30 11:52:18 2024] Server started. Waiting for clients...
+[Mon Dec 30 11:52:24 2024] Handling client_fd: 4
+[Mon Dec 30 11:52:24 2024] Accepted new client connection (fd: 4).
+[Mon Dec 30 11:52:24 2024] Received message from client_fd 4: {"data":{"name":"a"},"packet_type":"message"}
+
+[Mon Dec 30 11:52:24 2024] Added user: a with fd: 4
+[Mon Dec 30 11:52:24 2024] User 'a' connected on fd 4.
+[Mon Dec 30 11:52:30 2024] 333333
+[Mon Dec 30 11:52:30 2024] Client_fd 4 has closed the connection.
+[Mon Dec 30 11:52:30 2024] Removing user: a with fd: 4
+[Mon Dec 30 11:52:30 2024] User disconnected:  on fd 4.
+[Mon Dec 30 11:52:30 2024] Closed connection for client_fd.
+[Mon Dec 30 11:53:46 2024] Interrupt signal (2) received.
+[Mon Dec 30 11:53:47 2024] Server stopped listening for new connections.
