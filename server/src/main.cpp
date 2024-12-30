@@ -216,6 +216,23 @@ void handle_client(int client_fd) {
 
         std::cout << "User '" << uname << "' connected on socket " << client_fd << "." << std::endl;
 
+        // Prepare the list of existing collaborators excluding the new user
+        json existing_collaborators = json::array();
+        {
+            std::lock_guard<std::mutex> lock(users_mutex);
+            for (const auto& [fd, user] : users) {
+                if (fd == client_fd) continue; // Exclude the new user
+                existing_collaborators.push_back({
+                    {"name", user.uname},
+                    {"color", user.ucolor},
+                    {"cursor", {
+                        {"x", user.cursor_x},
+                        {"y", user.cursor_y}
+                    }}
+                });
+            }
+        }
+
         // Send a success message with assigned color and current buffer/collaborators
         json success_msg = {
             {"packet_type", "message"},
@@ -223,7 +240,7 @@ void handle_client(int client_fd) {
                 {"message_type", "connect_success"},
                 {"color", ucolor},
                 {"buffer", shared_buffer},        // Send current shared buffer
-                {"collaborators", json::array()}  // Send current collaborators
+                {"collaborators", existing_collaborators}  // Send current collaborators
             }}
         };
         send_all(client_fd, success_msg.dump() + "\n");
@@ -325,8 +342,31 @@ void handle_client(int client_fd) {
                         }
                     }
                     else if (message_json["packet_type"] == "update") {
-                        // Handle legacy buffer-based updates if any
-                        // Optional: Implement if you still want to support buffer-based updates
+                        // Handle cursor position updates
+                        json data = message_json["data"];
+                        if (data.contains("cursor")) {
+                            int new_x = data["cursor"]["x"];
+                            int new_y = data["cursor"]["y"];
+
+                            // Update the user's cursor position
+                            {
+                                std::lock_guard<std::mutex> lock(users_mutex);
+                                if (users.find(client_fd) != users.end()) {
+                                    users[client_fd].cursor_x = new_x;
+                                    users[client_fd].cursor_y = new_y;
+                                }
+                            }
+
+                            // Broadcast the cursor update to all other clients
+                            json cursor_update = {
+                                {"packet_type", "update"},
+                                {"data", {
+                                    {"name", users[client_fd].uname},
+                                    {"cursor", { {"x", new_x}, {"y", new_y} }}
+                                }}
+                            };
+                            broadcast_message(cursor_update, client_fd);
+                        }
                     }
                     // Handle other packet types as needed
                 }

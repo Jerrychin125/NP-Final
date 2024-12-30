@@ -182,6 +182,28 @@ void receive_messages() {
 
                         std::cout << "Applied operation '" << op_type << "' from server." << std::endl;
                     }
+                    else if (message["packet_type"] == "update") {
+                        // Handle cursor position updates from other users
+                        std::string user_name = message["data"]["name"];
+                        int cursor_x = message["data"]["cursor"]["x"];
+                        int cursor_y = message["data"]["cursor"]["y"];
+
+                        std::lock_guard<std::mutex> lock(collaborators_mutex);
+                        if (collaborators.find(user_name) != collaborators.end()) {
+                            collaborators[user_name].cursor_x = cursor_x;
+                            collaborators[user_name].cursor_y = cursor_y;
+                        }
+                        else {
+                            // Optionally handle cases where the user is not in the collaborators map
+                            // For example, add the user to the map
+                            Collaborator new_collab;
+                            new_collab.name = user_name;
+                            new_collab.color = sf::Color::White; // Default color or handle appropriately
+                            new_collab.cursor_x = cursor_x;
+                            new_collab.cursor_y = cursor_y;
+                            collaborators[user_name] = new_collab;
+                        }
+                    }
                 }
                 catch (json::parse_error& e) {
                     std::cerr << "JSON parse error: " << e.what() << std::endl;
@@ -410,6 +432,13 @@ int main() {
                         cursor_x++;
                     }
                 }
+                json cursor_msg = {
+                    {"packet_type", "update"},
+                    {"data", {
+                        {"cursor", { {"x", cursor_x}, {"y", cursor_y} }}
+                    }}
+                };
+                send_json(cursor_msg);
             }
 
             // Handle key presses for navigation
