@@ -4,18 +4,6 @@
 ![GitHub last commit](https://img.shields.io/github/last-commit/Jerrychin125/NP-Final)
 ![GitHub issues](https://img.shields.io/github/issues/Jerrychin125/NP-Final)
 
-## Table of Contents
-
-- [Introduction](#introduction)
-- [Features](#features)
-- [Requirements](#requirements)
-- [Installation](#installation)
-- [Usage](#usage)
-- [File Structure](#file-structure)
-- [Contributing](#contributing)
-- [License](#license)
-- [Contact](#contact)
-
 ## Introduction
 
 ![Project Screenshot](demo.png "Project Screenshot")
